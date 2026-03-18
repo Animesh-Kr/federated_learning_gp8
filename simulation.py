@@ -2,6 +2,8 @@ import flwr as fl
 import torch
 import matplotlib.pyplot as plt
 import random
+import pandas as pd
+import os
 
 from client import FlowerClient
 from dataset import load_datasets
@@ -10,7 +12,12 @@ from model import Net
 
 NUM_CLIENTS = 50
 NUM_ROUNDS = 100
+CLIENTS_PER_ROUND = 10
 
+MODE = "proposed"  # change to "baseline" or "proposed"
+
+
+client_stats = {}
 
 compute_energy_log = []
 communication_energy_log = []
@@ -21,12 +28,8 @@ accuracy_history = []
 trainloaders, testloader = load_datasets(NUM_CLIENTS)
 
 
-# ------------------------------------------------
-# Heterogeneous IoT Device Simulation
-# ------------------------------------------------
-
+# ------------------ DEVICE PROFILES ------------------
 device_types = ["sensor", "mobile", "edge"]
-
 client_profiles = {}
 
 for cid in range(NUM_CLIENTS):
@@ -34,42 +37,28 @@ for cid in range(NUM_CLIENTS):
     device = random.choice(device_types)
 
     if device == "sensor":
-        profile = {
-            "cpu_factor": 0.5,
-            "compression": 0.4
-        }
+        profile = {"battery": 0.4, "cpu_factor": 0.5, "compression": 0.4, "dropout": 0.3}
 
     elif device == "mobile":
-        profile = {
-            "cpu_factor": 0.8,
-            "compression": 0.7
-        }
+        profile = {"battery": 0.7, "cpu_factor": 0.8, "compression": 0.7, "dropout": 0.15}
 
     else:
-        profile = {
-            "cpu_factor": 1.2,
-            "compression": 1.0
-        }
+        profile = {"battery": 1.0, "cpu_factor": 1.2, "compression": 1.0, "dropout": 0.05}
 
     client_profiles[cid] = profile
 
 
-# ------------------------------------------------
-# Evaluation
-# ------------------------------------------------
-
+# ------------------ EVALUATION ------------------
 def test_model(parameters):
 
     model = Net()
-
     params_dict = zip(model.state_dict().keys(), parameters)
     state_dict = {k: torch.tensor(v) for k, v in params_dict}
 
     model.load_state_dict(state_dict, strict=True)
     model.eval()
 
-    correct = 0
-    total = 0
+    correct, total = 0, 0
 
     with torch.no_grad():
         for data, target in testloader:
@@ -83,71 +72,92 @@ def test_model(parameters):
 
 def evaluate(server_round, parameters, config):
 
-    accuracy = test_model(parameters)
+    acc = test_model(parameters)
+    accuracy_history.append(acc)
 
-    accuracy_history.append(accuracy)
+    print(f"Round {server_round} Accuracy: {acc}")
 
-    print(f"Round {server_round} Accuracy: {accuracy}")
-
-    return 0.0, {"accuracy": accuracy}
+    return 0.0, {"accuracy": acc}
 
 
-# ------------------------------------------------
-# Client creation
-# ------------------------------------------------
-
+# ------------------ CLIENT FN ------------------
 def client_fn(cid: str):
-
-    cid = int(cid)
-
-    return FlowerClient(trainloaders[cid], client_profiles[cid])
+    return FlowerClient(trainloaders[int(cid)], client_profiles[int(cid)])
 
 
-# ------------------------------------------------
-# Strategy (ONLY ENERGY TRACKING)
-# ------------------------------------------------
+# ------------------ SCORE ------------------
+def compute_score(stats):
 
+    return (
+        0.2 * stats["battery"]
+        + 0.2 * stats["cpu"]
+        + 0.2 * (1 - stats["dropout"])
+        - 0.2 * stats["compute_energy"]
+        - 0.2 * stats["communication_energy"]
+    )
+
+
+# ------------------ STRATEGY ------------------
 class EnergyStrategy(fl.server.strategy.FedAvg):
+
+    def configure_fit(self, server_round, parameters, client_manager):
+
+        if MODE == "baseline":
+            return super().configure_fit(server_round, parameters, client_manager)
+
+        clients = list(client_manager.all().values())
+        scored = []
+
+        for c in clients:
+            cid = c.cid
+
+            if cid not in client_stats:
+                score = random.random()
+            else:
+                score = compute_score(client_stats[cid])
+
+            scored.append((c, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # ------------------ DIVERSITY ------------------
+        top_k = scored[:30]
+        selected = random.sample([c for c, _ in top_k], CLIENTS_PER_ROUND)
+
+        return [(c, fl.common.FitIns(parameters, {})) for c in selected]
 
     def aggregate_fit(self, server_round, results, failures):
 
-        aggregated_parameters, aggregated_metrics = super().aggregate_fit(
-            server_round, results, failures
-        )
+        agg_params, agg_metrics = super().aggregate_fit(server_round, results, failures)
 
-        round_compute = 0
-        round_comm = 0
-        round_total = 0
+        comp, comm, total = 0, 0, 0
 
-        for _, fit_res in results:
+        for client, res in results:
+            client_stats[client.cid] = res.metrics
 
-            round_compute += fit_res.metrics.get("compute_energy", 0)
-            round_comm += fit_res.metrics.get("communication_energy", 0)
-            round_total += fit_res.metrics.get("total_energy", 0)
+            comp += res.metrics.get("compute_energy", 0)
+            comm += res.metrics.get("communication_energy", 0)
+            total += res.metrics.get("total_energy", 0)
 
-        compute_energy_log.append(round_compute)
-        communication_energy_log.append(round_comm)
-        total_energy_log.append(round_total)
+        compute_energy_log.append(comp)
+        communication_energy_log.append(comm)
+        total_energy_log.append(total)
 
-        print(f"Round {server_round}")
-        print(f"Compute Energy: {round_compute}")
-        print(f"Communication Energy: {round_comm}")
-        print(f"Total Energy: {round_total}")
+        print(f"\nRound {server_round}")
+        print("Compute:", comp)
+        print("Comm:", comm)
+        print("Total:", total)
 
-        return aggregated_parameters, aggregated_metrics
+        return agg_params, agg_metrics
 
 
+# ------------------ RUN ------------------
 strategy = EnergyStrategy(
     fraction_fit=0.2,
-    min_fit_clients=10,
+    min_fit_clients=CLIENTS_PER_ROUND,
     min_available_clients=NUM_CLIENTS,
     evaluate_fn=evaluate
 )
-
-
-# ------------------------------------------------
-# Start Simulation
-# ------------------------------------------------
 
 fl.simulation.start_simulation(
     client_fn=client_fn,
@@ -157,37 +167,27 @@ fl.simulation.start_simulation(
 )
 
 
-# ------------------------------------------------
-# Plots
-# ------------------------------------------------
+# ------------------ SAVE ------------------
+min_len = min(len(accuracy_history), len(total_energy_log))
 
+df = pd.DataFrame({
+    "accuracy": accuracy_history[:min_len],
+    "compute_energy": compute_energy_log[:min_len],
+    "communication_energy": communication_energy_log[:min_len],
+    "total_energy": total_energy_log[:min_len]
+})
+
+df.to_csv(f"{MODE}_results.csv", index=False)
+print(f"{MODE}_results.csv saved")
+
+
+# ------------------ PLOT ------------------
 plt.figure()
 plt.plot(accuracy_history)
-plt.title("Accuracy vs Rounds")
-plt.xlabel("Round")
-plt.ylabel("Accuracy")
-plt.show()
-
-
-plt.figure()
-plt.plot(compute_energy_log)
-plt.title("Computation Energy vs Rounds")
-plt.xlabel("Round")
-plt.ylabel("Energy")
-plt.show()
-
-
-plt.figure()
-plt.plot(communication_energy_log)
-plt.title("Communication Energy vs Rounds")
-plt.xlabel("Round")
-plt.ylabel("Energy")
-plt.show()
-
+plt.title("Accuracy")
+plt.savefig(f"{MODE}_accuracy.png")
 
 plt.figure()
 plt.plot(total_energy_log)
-plt.title("Total Energy vs Rounds")
-plt.xlabel("Round")
-plt.ylabel("Energy")
-plt.show()
+plt.title("Energy")
+plt.savefig(f"{MODE}_energy.png")
