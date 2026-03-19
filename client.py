@@ -20,7 +20,15 @@ class FlowerClient(fl.client.NumPyClient):
 
     def fit(self, parameters, config):
         if random.random() < self.profile["dropout"]:
-            return self.get_parameters({}), 0, {"total_energy": 0}
+            metrics = {
+                "total_energy": 0.0,
+                "compute_energy": 0.0,
+                "communication_energy": 0.0,
+                "battery": self.profile.get("battery", 1.0),
+                "cpu": self.profile.get("cpu_factor", 1.0),
+                "dropout": 1.0,
+            }
+            return self.get_parameters({}), 0, metrics
         self.set_parameters(parameters)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01)
         self.model.train()
@@ -34,4 +42,12 @@ class FlowerClient(fl.client.NumPyClient):
         
         comp_e = (steps * self.profile["cpu_factor"] * 1000) * ALPHA
         comm_e = (sum(p.numel() for p in self.model.parameters()) * self.profile["compression"]) * BETA
-        return self.get_parameters({}), len(self.trainloader.dataset), {"total_energy": comp_e + comm_e}
+        metrics = {
+            "total_energy": comp_e + comm_e,
+            "compute_energy": comp_e,
+            "communication_energy": comm_e,
+            "battery": self.profile.get("battery", 1.0),
+            "cpu": self.profile.get("cpu_factor", 1.0),
+            "dropout": 0.0,
+        }
+        return self.get_parameters({}), len(self.trainloader.dataset), metrics
