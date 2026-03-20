@@ -1,4 +1,4 @@
-# Contribution Notes — Animesh Kumar (250591936)
+# Contribution Notes — Animesh Kumar
 
 ## What This Folder Contains
 
@@ -87,7 +87,7 @@ All outputs are saved to `/content/FL_outputs/` and downloaded as a zip in Cell 
 
 All result CSVs use the exact same column format as the group's `compare_results.py`:
 ```
-round, accuracy, compute_energy, communication_energy, total_energy, carbon_emissions
+round,accuracy,compute_energy,communication_energy,total_energy,carbon_emissions
 ```
 
 No changes to any existing group files are required.
