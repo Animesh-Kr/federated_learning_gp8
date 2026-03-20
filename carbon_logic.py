@@ -1,6 +1,6 @@
 # =============================================================================
 # carbon_logic.py
-# Stochastic carbon-intensity grid simulator — Animesh Kumar (250591936)
+# Stochastic carbon-intensity grid simulator — Animesh Kumar
 #
 # Simulates three geographic energy zones with sinusoidal daily patterns
 # and Gaussian noise, modelling real-world renewable grid fluctuation.
