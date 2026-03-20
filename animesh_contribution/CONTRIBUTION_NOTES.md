@@ -41,7 +41,7 @@ strategy embedded directly into the simulation pipeline.
 - State vector (dim=5): `[norm_carbon, battery, cpu_norm, dropout_risk, round_progress]`
 - Online training via experience replay (buffer=4,000 transitions)
 - Target network synced every 5 steps; gradient clipping (max_norm=1.0)
-- Epsilon-greedy exploration: ε decays 1.0 → 0.05 over 30 rounds
+- Epsilon-greedy exploration: ε starts at 1.0 and decays by 0.905 per round (≈0.05 after 30 rounds; lower-bounded at 0.05)
 - Reward: `+1.0 × Δaccuracy − 0.4 × norm_energy − 0.6 × norm_carbon`
 
 **3. Energy-Aware Strategy (`EnergyAwareStrategy`)**
@@ -86,7 +86,6 @@ All outputs are saved to `/content/FL_outputs/` and downloaded as a zip in Cell 
 ## CSV Compatibility
 
 All result CSVs use the exact same column format as the group's `compare_results.py`:
-
 ```
 round, accuracy, compute_energy, communication_energy, total_energy, carbon_emissions
 ```
